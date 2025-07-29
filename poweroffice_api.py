@@ -1,58 +1,113 @@
 import requests
-import json
-from config import PO_APP_KEY, PO_CLIENT_KEY, PO_API_BASE_URL
+import base64
+from dotenv import load_dotenv
+from config import PO_APP_KEY, PO_CLIENT_KEY, PO_SUB_KEY
 
-# A simple cache for the access token
-_access_token = None
+load_dotenv()
 
 
-def get_access_token():
+class PowerOfficeAPI:
     """
-    Authenticates with PowerOffice and returns an access token.
-    Note: PowerOffice GO API might use a more complex auth flow.
-    This is a simplified example. Please consult their documentation.
+    Handles authentication and requests to the PowerOffice Go API v2.
     """
-    global _access_token
-    if _access_token:
-        return _access_token
 
-    # This endpoint is hypothetical, check PowerOffice docs
-    auth_url = "https://login.poweroffice.net/connect/token"
+    TOKEN_URL = "https://goapi.poweroffice.net/demo/oauth/Token"
+    API_BASE_URL = "https://goapi.poweroffice.net/demo/v2"
 
-    payload = {
-        "grant_type": "client_credentials",
-        "client_id": PO_APP_KEY,
-        "client_secret": PO_CLIENT_KEY,
-    }
+    def __init__(self):
+        """
+        Initializes the API client with credentials from environment variables.
+        """
+        self.client_key = PO_CLIENT_KEY
+        self.app_key = PO_APP_KEY
+        self.subscription_key = PO_SUB_KEY
+        self.access_token = None
 
-    try:
-        response = requests.post(auth_url, data=payload)
-        response.raise_for_status()  # Raises an error for bad responses (4xx or 5xx)
-        _access_token = response.json().get("access_token")
-        return _access_token
-    except requests.exceptions.RequestException as e:
-        print(f"Error getting access token: {e}")
-        return None
+        if not all([self.client_key, self.app_key, self.subscription_key]):
+            raise ValueError(
+                "API credentials not found in environment variables.")
 
+    def _get_access_token(self):
+        auth_string = f"{self.app_key}:{self.client_key}"
+        base64_string = base64.b64encode(
+            auth_string.encode("ascii")).decode("ascii")
 
-def create_order(order_data):
-    """Sends a new order to the PowerOffice GO API."""
-    token = get_access_token()
-    if not token:
-        return {"success": False, "error": "Authentication failed."}
+        # --- API Request ---
+        # The payload for the token request
+        headers = {
+            "Authorization": f"Basic {base64_string}",
+            "Ocp-Apim-Subscription-Key": self.subscription_key,
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
 
-    order_url = f"{PO_API_BASE_URL}/Orders"
-    headers = {"Authorization": f"Bearer {token}",
-               "Content-Type": "application/json"}
+        payload = {"grant_type": "client_credentials"}
 
-    try:
-        response = requests.post(
-            order_url, data=json.dumps(order_data), headers=headers
-        )
-        response.raise_for_status()
-        return {"success": True, "data": response.json()}
-    except requests.exceptions.RequestException as e:
-        print(f"Error creating order: {e}")
-        print(f"Response body: {
-              e.response.text if e.response else 'No response'}")
-        return {"success": False, "error": str(e)}
+        try:
+            # Make the POST request to the token endpoint
+            response = requests.post(
+                self.TOKEN_URL, headers=headers, data=payload)
+
+            # Raise an exception for bad status codes (4xx or 5xx)
+            response.raise_for_status()
+
+            # --- Success ---
+            # Parse the JSON response
+            self.access_token = response.json().get("access_token")
+
+            print("\n✅ --- Success! --- ✅")
+
+        except requests.exceptions.HTTPError as http_err:
+            # --- Failure ---
+            print(f"\n❌ --- HTTP Error Occurred --- ❌")
+            print(f"Status Code: {http_err.response.status_code}")
+            print(f"Response Body: {http_err.response.text}")
+            self.access_token = None
+        except requests.exceptions.RequestException as req_err:
+            print(f"\n❌ --- Request Error Occurred --- ❌")
+            print(f"Error: {req_err}")
+            self.access_token = None
+
+        except Exception as e:
+            print(f"\n❌ --- An Unexpected Error Occurred --- ❌")
+            print(f"Error: {e}")
+            self.access_token = None
+
+    def create_sales_order(self, order_payload):
+        """
+        Creates a new sales order in PowerOffice Go.
+
+        Args:
+            order_payload (dict): The JSON payload for the sales order.
+
+        Returns:
+            dict: The JSON response from the API, or None on failure.
+        """
+        if not self.access_token:
+            self._get_access_token()
+            if not self.access_token:
+                print("Cannot create sales order without an access token.")
+                return None
+
+        url = f"{self.API_BASE_URL}/SalesOrders/Complete"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+            "Ocp-Apim-Subscription-Key": self.subscription_key,
+        }
+
+        try:
+            print(
+                f"Sending sales order for customer: {
+                    order_payload.get('customerNo')}"
+            )
+            response = requests.post(url, headers=headers, json=order_payload)
+            response.raise_for_status()
+            print("Sales order created successfully!")
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error creating sales order: {e}")
+            print(
+                f"Response content: {
+                    e.response.text if e.response else 'No response'}"
+            )
+            return None

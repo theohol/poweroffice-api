@@ -1,60 +1,167 @@
-import database
-import poweroffice_api
-from datetime import datetime, timezone
+import json
+from datetime import datetime
+from dotenv import load_dotenv
+from db_connector import DatabaseConnector
+from poweroffice_api import PowerOfficeAPI
 
-def run_invoice_routine():
-    """Main function to execute the entire invoicing process."""
-    print("Starting invoicing routine...")
-    
-    customers = database.get_customers_to_invoice()
-    if not customers:
-        print("No customers to invoice today.")
+# --- Configuration for Product Code Mapping ---
+# Maps the 'nr' from the 'produkter' table to the actual PowerOffice product code.
+PRODUCT_CODE_MAP = {
+    1: "6",  # 'nr' 1 from db maps to product code "6" in PowerOffice
+    2: "7",
+    3: "8",
+    4: "",  # An empty string will cause this product to be skipped
+    5: "9",
+}
+
+# --- Configuration for the extra traffic line ---
+TRAFFIC_PRODUCT_CODE = "15"  # The PowerOffice product code for "sip trunk traffic"
+
+
+def map_db_to_sales_order(customer_data):
+    """
+    Maps the combined data fetched from the database to the PowerOffice Go
+    sales order JSON format.
+    """
+    order_lines = []
+
+    # 1. Process standard products from the 'produkter' table
+    for product in customer_data.get("products", []):
+        db_product_nr = product.get("nr")
+        poweroffice_code = PRODUCT_CODE_MAP.get(db_product_nr)
+
+        if poweroffice_code:
+            order_lines.append(
+                {
+                    "productCode": poweroffice_code,
+                    # Use the correct keys from the dictionary created by db_connector
+                    "description": product.get("description"),
+                    "ProductUnitPrice": float(product.get("unit_price", 0)),
+                    "quantity": float(product.get("quantity", 0)),
+                }
+            )
+        else:
+            print(
+                f"⚠️ WARNING: No PowerOffice product code mapping found for DB product 'nr' {
+                    db_product_nr
+                }. Skipping line."
+            )
+
+    # 2. Process the extra "sip trunk traffic" line from the 'faktura' table
+    # This data is now pre-filtered by the database query to only include the current month.
+    traffic_info = customer_data.get("traffic_info")
+    if traffic_info and traffic_info.get("price") is not None:
+        order_lines.append(
+            {
+                "productCode": TRAFFIC_PRODUCT_CODE,
+                "description": "SIP Trunk Traffic",
+                "ProductUnitPrice": float(traffic_info.get("price", 0)),
+                "quantity": 1,
+            }
+        )
+
+    if not order_lines:
+        return None
+
+    customer_no = customer_data.get("customer_info", {}).get("organization_no")
+    if not customer_no:
+        print(
+            f"Skipping order for systemid {
+                customer_data.get('customer_info', {}).get('systemid')
+            } due to missing organization number."
+        )
+        return None
+
+    sales_order_payload = {
+        "customerNo": customer_no,
+        "orderDate": datetime.now().strftime("%Y-%m-%d"),
+        "SalesOrderLines": order_lines,
+    }
+    return sales_order_payload
+
+
+def process_and_create_orders(all_customers_data, po_api):
+    """
+    Processes customer data, prints the order, and sends it to the API.
+    """
+    if not all_customers_data:
+        print("No customer data found to process.")
         return
 
-    print(f"Found {len(customers)} customers to process.")
+    # The 'key' here is the internal systemid, 'data' is the dictionary of info
+    for systemid, data in all_customers_data.items():
+        print("-" * 50)
+        customer_name = data.get("customer_info", {}).get(
+            "name", f"Customer {systemid}"
+        )
+        print(f"Preparing order for {customer_name} (System ID: {systemid})")
 
-    for customer in customers:
-        customer_id, customer_name, po_customer_code = customer
-        print(f"\nProcessing customer: {customer_name} (ID: {customer_id})")
-        
-        products = database.get_products_for_customer(customer_id)
-        if not products:
-            print(f"No products to invoice for {customer_name}. Skipping.")
+        sales_order = map_db_to_sales_order(data)
+
+        if sales_order is None:
+            print("No valid lines to invoice for this customer. Skipping.")
             continue
 
-        # Get the current date in ISO 8601 format (UTC)
-        current_date = datetime.now(timezone.utc).isoformat()
+        print("\n--- Sales Order Preview ---")
+        print(json.dumps(sales_order, indent=2))
+        print("---------------------------\n")
 
-        # Transform data into the PowerOffice GO API format
-        # This structure is an EXAMPLE. You MUST match the official API documentation.
-        order_payload = {
-            "customerCode": po_customer_code,
-            "orderDate": current_date,
-            "deliveryDate": current_date,
-            "lines": [
-                {
-                    "productCode": p.product_code,
-                    "description": p.description,
-                    "quantity": float(p.quantity), # Ensure correct data types
-                    "unitPrice": float(p.unit_price)
-                } for p in products
-            ]
-        }
-
-        print(f"Sending order to PowerOffice for {len(products)} items.")
-        result = poweroffice_api.create_order(order_payload)
-
-        if result.get("success"):
-            print(f"Successfully created order for {customer_name}.")
-            # On success, mark the items as processed in our DB
-            database.mark_items_as_invoiced(customer_id)
-            print("Marked items as invoiced in local database.")
+        proceed = input(
+            "Do you want to create this sales order via the API? (y/n): "
+        ).lower()
+        if proceed == "y":
+            result = po_api.create_sales_order(sales_order)
+            if result:
+                print("API Response:", json.dumps(result, indent=2))
         else:
-            print(f"FAILED to create order for {customer_name}. Error: {result.get('error')}")
-            # Decide on error handling: retry later? Send a notification?
+            print("Skipping API creation for this order.")
 
-    print("\nInvoicing routine finished.")
+
+def main_all_customers():
+    """Main function to process all customers."""
+    print("Starting process for ALL customers...")
+    try:
+        db = DatabaseConnector()
+        po_api = PowerOfficeAPI()
+        customers_data = db.get_all_customer_data()
+        process_and_create_orders(customers_data, po_api)
+        db.close_connection()
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+    print("\nProcess finished.")
+
+
+def main_single_customer(system_id):
+    """Main function to process a single customer for testing purposes."""
+    print(f"Starting process for SINGLE customer (System ID: {system_id})...")
+    try:
+        db = DatabaseConnector()
+        po_api = PowerOfficeAPI()
+        # This method remains for testing, but won't filter faktura by date
+        customer_data = db.get_single_customer_data(system_id)
+        process_and_create_orders(customer_data, po_api)
+        db.close_connection()
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+    print("\nProcess finished.")
+
 
 if __name__ == "__main__":
-    run_invoice_routine()
+    load_dotenv()
 
+    print("Sales Order Creation Script")
+    print("1. Create orders for ALL customers (for current month)")
+    print("2. Create an order for a SINGLE customer (for testing)")
+    choice = input("Please choose an option (1 or 2): ")
+
+    if choice == "1":
+        main_all_customers()
+    elif choice == "2":
+        try:
+            cust_id_input = input("Enter the internal System ID to process: ")
+            cust_id = int(cust_id_input)
+            main_single_customer(cust_id)
+        except ValueError:
+            print("Invalid System ID. Please enter a whole number.")
+    else:
+        print("Invalid choice. Exiting.")
