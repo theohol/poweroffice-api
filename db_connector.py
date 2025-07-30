@@ -42,7 +42,10 @@ class DatabaseConnector:
             return None
 
     def _process_results(self, results):
-        """Helper function to process the raw SQL results into a structured dictionary."""
+        """
+        Helper function to process the raw SQL results into a structured dictionary.
+        Includes a safeguard to prevent duplicate product entries.
+        """
         if not results:
             return {}
 
@@ -61,17 +64,23 @@ class DatabaseConnector:
                     },
                     "products": [],
                     "traffic_info": None,
+                    "_added_products": set(),
                 }
 
-            if row.get("product_nr") is not None:
+            product_nr = row.get("product_nr")
+            if (
+                product_nr is not None
+                and product_nr not in customers_data[system_id]["_added_products"]
+            ):
                 customers_data[system_id]["products"].append(
                     {
-                        "nr": row.get("product_nr"),
+                        "nr": product_nr,
                         "description": row.get("product_description"),
                         "quantity": row.get("product_quantity"),
                         "unit_price": row.get("product_price"),
                     }
                 )
+                customers_data[system_id]["_added_products"].add(product_nr)
 
             if (
                 row.get("traffic_price") is not None
@@ -81,13 +90,16 @@ class DatabaseConnector:
                     "price": row.get("traffic_price")
                 }
 
+        for data in customers_data.values():
+            del data["_added_products"]
+
         return customers_data
 
     def get_all_customer_data(self):
         """
         Fetches and joins data for all valid customers for the current month.
         - Ignores customers with no organization number.
-        - Only includes 'faktura' data if the 'dato' is in the current month.
+        - Only includes the single highest 'faktura' amount if the 'dato' is in the current month.
         - Ignores 'produkter' where 'nr' is NULL.
         """
         now = datetime.now()
@@ -102,13 +114,22 @@ class DatabaseConnector:
                 p.vare AS product_description,
                 p.antall AS product_quantity,
                 p.pris AS product_price,
-                f.belop AS traffic_price
+                f.max_traffic_price AS traffic_price
             FROM 
                 custdata cd
             LEFT JOIN 
                 produkter p ON cd.systemid = p.systemid AND p.nr IS NOT NULL
-            LEFT JOIN 
-                faktura f ON cd.systemid = f.systemid AND MONTH(f.dato) = %s AND YEAR(f.dato) = %s
+            LEFT JOIN (
+                SELECT 
+                    systemid, 
+                    MAX(belop) AS max_traffic_price
+                FROM 
+                    faktura
+                WHERE 
+                    MONTH(dato) = %s AND YEAR(dato) = %s
+                GROUP BY 
+                    systemid
+            ) AS f ON cd.systemid = f.systemid
             WHERE
                 cd.kundenr IS NOT NULL AND cd.kundenr != ''
             ORDER BY
@@ -120,7 +141,7 @@ class DatabaseConnector:
     def get_single_customer_data(self, system_id):
         """
         Fetches and joins data for a single customer based on their systemid.
-        NOTE: This method does NOT filter the 'faktura' table by date.
+        NOTE: This method does NOT filter the 'faktura' table by date or amount.
         It is intended for testing and fetching all data for one customer.
         """
         query = """
