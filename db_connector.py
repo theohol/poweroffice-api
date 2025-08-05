@@ -4,15 +4,7 @@ from datetime import datetime
 
 
 class DatabaseConnector:
-    """
-    Handles connections and complex data fetching from the database by joining
-    custdata, produkter, and faktura tables.
-    """
-
     def __init__(self):
-        """
-        Initializes the database connection using credentials from environment variables.
-        """
         try:
             self.connection = mysql.connector.connect(
                 host=os.getenv("DB_HOST"),
@@ -42,10 +34,6 @@ class DatabaseConnector:
             return None
 
     def _process_results(self, results):
-        """
-        Helper function to process the raw SQL results into a structured dictionary.
-        Includes a safeguard to prevent duplicate product entries.
-        """
         if not results:
             return {}
 
@@ -96,12 +84,6 @@ class DatabaseConnector:
         return customers_data
 
     def get_all_customer_data(self):
-        """
-        Fetches and joins data for all valid customers for the current month.
-        - Ignores customers with no organization number.
-        - Only includes the single highest 'faktura' amount if the 'dato' is in the current month.
-        - Ignores 'produkter' where 'nr' is NULL.
-        """
         now = datetime.now()
         current_month = now.month
         current_year = now.year
@@ -140,7 +122,6 @@ class DatabaseConnector:
 
     def get_single_customer_data(self, system_id):
         """
-        Fetches and joins data for a single customer based on their systemid.
         NOTE: This method does NOT filter the 'faktura' table by date or amount.
         It is intended for testing and fetching all data for one customer.
         """

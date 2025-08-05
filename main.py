@@ -19,10 +19,6 @@ TRAFFIC_PRODUCT_CODE = "15"  # The PowerOffice product code for "sip trunk traff
 
 
 def map_db_to_sales_order(customer_data):
-    """
-    Maps the combined data fetched from the database to the PowerOffice Go
-    sales order JSON format.
-    """
     order_lines = []
 
     # 1. Process standard products from the 'produkter' table
@@ -81,9 +77,6 @@ def map_db_to_sales_order(customer_data):
 
 
 def process_and_create_orders(all_customers_data, po_api):
-    """
-    Processes customer data, prints the order, and sends it to the API.
-    """
     if not all_customers_data:
         print("No customer data found to process.")
         return
@@ -118,7 +111,6 @@ def process_and_create_orders(all_customers_data, po_api):
 
 
 def main_all_customers():
-    """Main function to process all customers."""
     print("Starting process for ALL customers...")
     try:
         db = DatabaseConnector()
@@ -132,7 +124,6 @@ def main_all_customers():
 
 
 def main_single_customer(system_id):
-    """Main function to process a single customer for testing purposes."""
     print(f"Starting process for SINGLE customer (System ID: {system_id})...")
     try:
         db = DatabaseConnector()
