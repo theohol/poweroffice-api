@@ -11,8 +11,8 @@ class PowerOfficeAPI:
     Handles authentication and requests to the PowerOffice Go API v2.
     """
 
-    TOKEN_URL = "https://goapi.poweroffice.net/demo/oauth/Token"
-    API_BASE_URL = "https://goapi.poweroffice.net/demo/v2"
+    TOKEN_URL = "https://goapi.poweroffice.net/oauth/Token"
+    API_BASE_URL = "https://goapi.poweroffice.net/v2"
 
     def __init__(self):
         """
