@@ -7,9 +7,6 @@ load_dotenv()
 
 
 class PowerOfficeAPI:
-    """
-    Handles authentication and requests to the PowerOffice Go API v2.
-    """
 
     TOKEN_URL = "https://goapi.poweroffice.net/oauth/Token"
     API_BASE_URL = "https://goapi.poweroffice.net/v2"
@@ -73,15 +70,6 @@ class PowerOfficeAPI:
             self.access_token = None
 
     def create_sales_order(self, order_payload):
-        """
-        Creates a new sales order in PowerOffice Go.
-
-        Args:
-            order_payload (dict): The JSON payload for the sales order.
-
-        Returns:
-            dict: The JSON response from the API, or None on failure.
-        """
         if not self.access_token:
             self._get_access_token()
             if not self.access_token:
