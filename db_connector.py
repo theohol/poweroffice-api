@@ -51,7 +51,7 @@ class DatabaseConnector:
                         "name": f"Customer (Org No: {row.get('organization_no')})",
                     },
                     "products": [],
-                    "traffic_info": None,
+                    "traffic_info": {},
                     "_added_products": set(),
                 }
 
@@ -70,13 +70,15 @@ class DatabaseConnector:
                 )
                 customers_data[system_id]["_added_products"].add(product_nr)
 
-            if (
-                row.get("traffic_price") is not None
-                and customers_data[system_id]["traffic_info"] is None
-            ):
-                customers_data[system_id]["traffic_info"] = {
-                    "price": row.get("traffic_price")
-                }
+
+            if not customers_data[system_id]["traffic_info"]:
+                traffic_price = row.get("traffic_price")
+                traffic_quantity = row.get("traffic_quantity")
+                if traffic_price is not None or traffic_quantity is not None:
+                    customers_data[system_id]["traffic_info"] = {
+                        "price": traffic_price,
+                        "quantity": traffic_quantity
+                    }
 
         for data in customers_data.values():
             del data["_added_products"]
@@ -96,7 +98,8 @@ class DatabaseConnector:
                 p.vare AS product_description,
                 p.antall AS product_quantity,
                 p.pris AS product_price,
-                f.max_traffic_price AS traffic_price
+                f.max_traffic_price AS traffic_price,
+                f.total_traffic_quantity AS traffic_quantity
             FROM 
                 custdata cd
             LEFT JOIN 
@@ -104,7 +107,8 @@ class DatabaseConnector:
             LEFT JOIN (
                 SELECT 
                     systemid, 
-                    MAX(belop) AS max_traffic_price
+                    SUM(belop) AS max_traffic_price,
+                    MAX(antall) as total_traffic_quantity
                 FROM 
                     faktura
                 WHERE 
@@ -121,10 +125,11 @@ class DatabaseConnector:
         return self._process_results(results)
 
     def get_single_customer_data(self, system_id):
-        """
-        NOTE: This method does NOT filter the 'faktura' table by date or amount.
-        It is intended for testing and fetching all data for one customer.
-        """
+
+        now = datetime.now()
+        current_month = now.month;
+        current_year = now.year;
+
         query = """
             SELECT 
                 cd.systemid,
@@ -133,17 +138,32 @@ class DatabaseConnector:
                 p.vare AS product_description,
                 p.antall AS product_quantity,
                 p.pris AS product_price,
-                f.belop AS traffic_price
+                f.max_traffic_price AS traffic_price,
+                f.total_traffic_quantity AS traffic_quantity
             FROM 
                 custdata cd
             LEFT JOIN 
-                produkter p ON cd.systemid = p.systemid
-            LEFT JOIN 
-                faktura f ON cd.systemid = f.systemid
+                produkter p ON cd.systemid = p.systemid AND p.nr IS NOT NULL
+            LEFT JOIN (
+                SELECT
+                    systemid,
+                    SUM(belop) AS max_traffic_price,
+                    MAX(antall) as total_traffic_quantity
+                FROM 
+                    faktura
+                WHERE
+                    MONTH(dato) = %s AND YEAR(dato) = %s
+                GROUP BY
+                    systemid
+            ) AS f ON cd.systemid = f.systemid
             WHERE
-                cd.systemid = %s;
+                cd.kundenr IS NOT NULL AND cd.kundenr != ''
+                AND cd.systemid = %s
+            ORDER BY
+                cd.systemid;
         """
-        results = self._fetch_data(query, (system_id,))
+
+        results = self._fetch_data(query, (current_month, current_year, system_id))
         return self._process_results(results)
 
     def close_connection(self):

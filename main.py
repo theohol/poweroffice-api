@@ -7,35 +7,54 @@ from poweroffice_api import PowerOfficeAPI
 # --- Configuration for Product Code Mapping ---
 # Maps the 'nr' from the 'produkter' table to the actual PowerOffice product code.
 PRODUCT_CODE_MAP = {
-    1: "6",  # 'nr' 1 from db maps to product code "6" in PowerOffice
-    2: "7",
-    3: "8",
+    1: "8",  # 'nr' 1 from db maps to product code "6" in PowerOffice
+    2: "3",
+    3: "10",
     4: "",  # An empty string will cause this product to be skipped
-    5: "9",
+    5: "8",
 }
 
-# --- Configuration for the extra traffic line ---
-TRAFFIC_PRODUCT_CODE = "15"  # The PowerOffice product code for "sip trunk traffic"
+PRICE_FROM_PO_CODES = {
+    "3",
+    "10"
+}
+
+TRAFFIC_PRODUCT_CODE = "7"  # The PowerOffice product code for "sip trunk traffic"
 
 
 def map_db_to_sales_order(customer_data):
     order_lines = []
+    traffic_info = customer_data.get("traffic_info")
+
+    has_predictive_dialer = False
 
     # 1. Process standard products from the 'produkter' table
     for product in customer_data.get("products", []):
         db_product_nr = product.get("nr")
+
+        if db_product_nr == 2:
+            has_predictive_dialer = True
+
         poweroffice_code = PRODUCT_CODE_MAP.get(db_product_nr)
 
         if poweroffice_code:
-            order_lines.append(
-                {
-                    "productCode": poweroffice_code,
-                    # Use the correct keys from the dictionary created by db_connector
-                    "description": product.get("description"),
-                    "ProductUnitPrice": float(product.get("unit_price", 0)),
-                    "quantity": float(product.get("quantity", 0)),
-                }
-            )
+            line = {
+                "productCode": poweroffice_code,
+                "description": product.get("description"),
+            }
+
+            if db_product_nr == 2 and traffic_info and traffic_info.get("price") is not None:
+                line["quantity"] = float(traffic_info.get("quantity", 0))
+                print(f"  -> INFO: Using 'faktura' quantity ({line['quantity']}) as quantity for Predictive product.")
+
+            else:
+                line["quantity"] = float(product.get("quantity", 0))
+
+
+            if poweroffice_code not in PRICE_FROM_PO_CODES:
+                line["ProductUnitPrice"] = float(product.get("unit_price", 0))
+
+            order_lines.append(line)
         else:
             print(
                 f"⚠️ WARNING: No PowerOffice product code mapping found for DB product 'nr' {
@@ -43,21 +62,30 @@ def map_db_to_sales_order(customer_data):
                 }. Skipping line."
             )
 
-    # 2. Process the extra "sip trunk traffic" line from the 'faktura' table
-    # This data is now pre-filtered by the database query to only include the current month.
-    traffic_info = customer_data.get("traffic_info")
-    if traffic_info and traffic_info.get("price") is not None:
-        order_lines.append(
-            {
-                "productCode": TRAFFIC_PRODUCT_CODE,
-                "description": "SIP Trunk Traffic",
-                "ProductUnitPrice": float(traffic_info.get("price", 0)),
-                "quantity": 1,
-            }
-        )
+    # 2. If no predictive is found, use nextcom dialer instead
+    if not has_predictive_dialer and traffic_info and traffic_info.get("quantity"):
+        traffic_quantity = float(traffic_info.get("quantity", 0))
 
-    if not order_lines:
+        if traffic_quantity > 0:
+            print("  -> INFO: No predictive dialer found. Adding Normal Dialer (code=1) with traffic quantity.")
+            order_lines.append({
+                "productCode": "1",
+                "description": "Nextcom Dialer",
+                "quantity": traffic_quantity
+            })
+
+    # 3. Process the extra "sip trunk traffic" line from the 'faktura' table
+    if traffic_info and traffic_info.get("price") is not None:
+        order_lines.append({
+            "productCode": TRAFFIC_PRODUCT_CODE,
+            "description": "SIP Trunk Traffic",
+            "ProductUnitPrice": float(traffic_info.get("price", 0)),
+            "quantity": 1,
+        })
+
+    if not order_lines: 
         return None
+
 
     customer_no = customer_data.get("customer_info", {}).get("organization_no")
     if not customer_no:
@@ -81,7 +109,6 @@ def process_and_create_orders(all_customers_data, po_api):
         print("No customer data found to process.")
         return
 
-    # The 'key' here is the internal systemid, 'data' is the dictionary of info
     for systemid, data in all_customers_data.items():
         print("-" * 50)
         customer_name = data.get("customer_info", {}).get(
@@ -142,7 +169,7 @@ if __name__ == "__main__":
 
     print("Sales Order Creation Script")
     print("1. Create orders for ALL customers (for current month)")
-    print("2. Create an order for a SINGLE customer (for testing)")
+    print("2. Create an order for a SINGLE customer (for current month)")
     choice = input("Please choose an option (1 or 2): ")
 
     if choice == "1":
